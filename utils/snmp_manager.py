@@ -1,4 +1,6 @@
-from pysnmp.hlapi import *
+import json
+from pysnmp.hlapi import CommunityData, ContextData, ObjectIdentity, ObjectType, SnmpEngine, UdpTransportTarget, UsmUserData, nextCmd
+import logging
 
 class SNMPManager:
     def __init__(self, version, community=None, user=None, auth_key=None, priv_key=None, auth_protocol=None, priv_protocol=None):
@@ -9,8 +11,14 @@ class SNMPManager:
         self.priv_key = priv_key
         self.auth_protocol = auth_protocol
         self.priv_protocol = priv_protocol
+        logging.basicConfig(
+            filename='logs/snmp_errors.log',  
+            level=logging.ERROR,
+            format='%(asctime)s %(levelname)s: %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
 
-    def snmp_discovery(self, target, base_oid='1.3.6.1.2.1.1'):
+    def snmp_discovery(self, target, base_oid='1.3.6.1.2.1.1'): # .1.3.6.1.2.1.2.2.1 for ifTable
         results = []
         if self.version == 1 or self.version == 2:
             if not self.community:
@@ -38,6 +46,11 @@ class SNMPManager:
             lexicographicMode=False,
         ):
             if errorIndication or errorStatus:
+                # Log errors into a log file
+                if errorIndication:
+                    logging.error(f'Error Indication: {errorIndication}')
+                if errorStatus:
+                    logging.error(f'Error Status: {errorStatus.prettyPrint()} at {errorIndex and varBinds[int(errorIndex) - 1][0] or "?"}')
                 continue
             else:
                 for varBind in varBinds:
@@ -111,3 +124,41 @@ class SNMPManager:
                     local_ports[port_index] = value_str
 
         return local_ports
+    
+    def recursive_discovery(self, ip, discovered_devices=None, discovered_ips=None):
+        if discovered_devices is None:
+            discovered_devices = {}
+        if discovered_ips is None:
+            discovered_ips = set()
+    
+        # Print the current IP being used to get neighbors
+        print(f"Discovering neighbors for IP: {ip}")
+    
+        # Add the current IP to the set of discovered IPs
+        discovered_ips.add(ip)
+    
+        neighbors = self.get_snmp_neighbors(ip)
+        ports = self.get_local_ports(ip)
+    
+        # Store the neighbors and ports for the current IP
+        discovered_devices[ip] = {
+            "neighbors": {},
+            "ports": ports
+        }
+    
+        for oid, value in neighbors:
+            if oid.startswith("SNMPv2-SMI::enterprises.9.9.23.1.2.1.1.4"):
+                neighbor_ip = self.hex_to_ip(value)
+                print(f"Found neighbor: {neighbor_ip}")
+                if neighbor_ip not in discovered_ips:
+                    discovered_ips.add(neighbor_ip)
+                    # Recursively discover neighbors of the neighbor
+                    discovered_devices[ip]["neighbors"][neighbor_ip] = self.recursive_discovery(neighbor_ip, {}, discovered_ips)[neighbor_ip]
+    
+        return discovered_devices
+
+    def hex_to_ip(self, hex_value):
+        # Convert hex string to IP address
+        hex_value = hex_value.replace("0x", "")
+        ip_parts = [str(int(hex_value[i:i+2], 16)) for i in range(0, len(hex_value), 2)]
+        return ".".join(ip_parts)
